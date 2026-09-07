@@ -739,3 +739,60 @@ Diese Phase liefert **keine neue architektonische Klärung** der zentralen Trans
 ### Remaining Unknowns / Next Step
 
 Der nächste sinnvolle Schritt wäre ein gezielter, kleinerer Versuch, an einer der zehn bekannten String-Adressen (z. B. `0x1503c45e4` für `FSessions1047`) manuell in Ghidra rückwärts durch den unmittelbar umgebenden, bereits vorhandenen Funktionscontainer (z. B. über `getInstructionAt`/vorherige Instruktionen ab der Adresse, an der ein `LEA`/`MOV`-Befehl auf diese Adresse zeigen müsste) zu suchen, statt sich auf Ghidras automatische Referenzerkennung zu verlassen – dies wurde aus Zeit-/Aufwandsgründen in dieser Phase nicht mehr durchgeführt und wäre der logische nächste, weiterhin rein statische Schritt.
+
+---
+
+## Ghidra Xref Recovery / Function Boundary Validation
+
+### Fragestellung dieser Phase
+
+Bevor weiter versucht wird, `FSessions1047::JoinSession()` konkret zu dekompilieren: Kann Ghidra bei diesem Binary überhaupt zuverlässig von bekannten String-/Datenadressen zu referenzierendem Code navigieren, wenn die automatische Funktionsanalyse (siehe letzte Sektion) nachweislich unvollständig ist? Getestet an einer kleinen, gezielten Stichprobe statt an einer erneuten Vollanalyse.
+
+### Method
+
+Read-only Ghidra-Headless-Postscript (`-readOnly -noanalysis`, keine erneute Analyse, dasselbe zuvor analysierte Projekt `sad.rep` wiederverwendet) für 12 Teststrings: die zehn zentralen `1047`/`Maverick`-Strings aus der Hauptanalyse plus zwei generische UE-Engine-Strings (`ClientTravel`, `PendingNetGame`) als Kontrollgruppe. Für jeden String wurde geprüft: (1) Ghidras `Data`-Klassifizierung an der gefundenen Adresse, (2) ein Hexdump des unmittelbaren Umfelds, (3) der **tatsächliche String-Anfang** durch Rückwärts-Scan über zusammenhängende druckbare Zeichen (da die zuvor per Substring-Suche gefundene Adresse oft mitten in einem längeren Literal wie `"class UE::Online::FSessions1047"` liegt, nicht an dessen Anfang), (4) `ReferenceManager.getReferencesTo()` sowohl an der Substring- als auch an der true-start-Adresse, und (5) zusätzlich eine rohe Suche nach dem 8-Byte-Little-Endian-Pointer auf diese Adresse irgendwo im Speicher (Test auf indirekte Pointer-Tabellen-Referenzen, wie sie z. B. UENUM-Display-String-Tabellen verwenden, statt direkter `LEA`-Instruktionen).
+
+### VERIFIED
+
+- **Keiner der zwölf getesteten Strings ist von Ghidra als `Data` (z. B. String-Datentyp) klassifiziert** – an allen zwölf Adressen liefert `getDataAt()` nur `type=undefined length=1`. Das bestätigt erneut (aus der Hauptanalyse bekannt), dass Ghidras ASCII-/Unicode-Strings-Analyzer für dieses Binary praktisch wirkungslos war.
+- **Der Rückwärts-Scan zum tatsächlichen String-Anfang funktioniert korrekt und liefert plausible Ergebnisse**, z. B.:
+  - `FSessions1047` (Substring-Treffer bei `0x1503c45e4`) → tatsächlicher Anfang bei `0x1503c45c0`, 36 Bytes davor – exakt die Länge von `"class UE::Online::"` (18 Zeichen × 2 Byte UTF-16LE). Der Hexdump bestätigt das volle Literal `"class UE::Online::FSessions1047"`.
+  - `FAuth1047` analog: wahrer Anfang bei `0x1503c4518`, ebenfalls 36 Bytes davor, Hexdump zeigt `"class UE::Online::FAuth1047"`.
+  - `GetResolvedConnectString`: wahrer Anfang 82 Bytes davor (`0x1509fbba0`), Hexdump zeigt den vollen Satz `"...result to GetResolvedConnectString()"`.
+  - `1047.Online.Maverick.ForceHttpInsteadOfGrpc`: unmittelbar davor liegt (getrennt durch ein Nullbyte-Paar) die Zeichenkette `"...t::GetAuthToken"` – d. h. dieser CVar-Name-String liegt im selben zusammenhängenden Datenblock wie eine Auth-Token-bezogene Zeichenkette, was die in Phase 5 dokumentierte thematische Nähe zusätzlich untermauert (aber weiterhin ohne Code-Xref-Beweis).
+- **Für ALLE zwölf getesteten Strings (Substring- UND wahre Startadresse) liefert `getReferencesTo()` exakt 0 Code-/Daten-Xrefs.** Das schließt ausdrücklich die **Kontrollgruppe** ein: `ClientTravel` und `PendingNetGame` – zwei generische, garantiert im Spiel verwendete UE-Engine-Strings (Teil des `ETravelFailure`-Fehlertext-Systems) – haben ebenfalls **0 Code-Xrefs**.
+- **Die rohe 8-Byte-Pointer-Tabellen-Suche findet für die Kontrollgruppe tatsächlich Treffer, für keinen der zehn `1047`/`Maverick`-Strings jedoch:**
+  - `ClientTravel` (wahrer Anfang `0x14fbac0f8`, Literal `"ETravelFailure::ClientTravelFailure"`): ein 8-Byte-Pointer auf diese Adresse liegt bei `0x14fbaed50` – vermutlich ein Slot in einer generierten `UENUM`-Anzeige-String-Tabelle für `ETravelFailure`.
+  - `PendingNetGame` analog: Pointer-Slot bei `0x14fbaed20`.
+  - **Aber:** Auch diese gefundenen Pointer-Tabellen-Slots selbst haben `0 Referenzen` – d. h. auch der Code, der diese (offenbar existierende) Tabelle ausliest, wurde von Ghidra nicht als solcher erkannt/disassembliert. Eine Sackgasse, aber ein konsistentes Bild.
+  - Für alle zehn `1047`/`Maverick`-Strings: **0 Treffer** auch bei der Pointer-Tabellen-Suche – diese Strings liegen offenbar nicht in einer einfachen, flachen 8-Byte-Pointer-Tabelle (oder die Tabelle ist anders strukturiert).
+
+### STRONGLY INDICATED
+
+- **Da selbst die Kontrollgruppe (mit Sicherheit im Spiel verwendete, generische Engine-Strings) keine Code-Xrefs aufweist, handelt es sich um ein allgemeines, binary-weites Analyse-/Xref-Erkennungsproblem dieses Ghidra-Projekts – nicht um eine Besonderheit der `1047`/`Maverick`-Strings.** Dies ist eine wichtige Entlastung: Das Fehlen von Xrefs zu `FSessions1047` etc. ist kein eigenständiges Indiz gegen deren Verwendung, sondern lediglich Symptom derselben allgemeinen Analyse-Lücke, die auch nachweislich verwendete Strings betrifft.
+- Die Existenz einer (wenn auch unreferenzierten) Pointer-Tabelle für die Kontrollgruppen-Strings, aber das Fehlen einer solchen Tabelle für die `1047`-Strings, deutet darauf hin, dass letztere **nicht** über denselben `UENUM`-Display-String-Mechanismus eingebunden sind, sondern vermutlich (wie in Phase 6 der Hauptanalyse vermutet) über C++-`TTypeName`-Reflection oder Log-/Ensure-Makro-Strings, deren tatsächliche Referenzierungsmethode (RIP-relative `LEA`, häufig mit Compiler-Optimierungen wie String-Pooling/Merging) von Ghidras aktueller Analyse nicht erfasst wurde.
+
+### HYPOTHESIS
+
+- Es bleibt eine unbewiesene Möglichkeit, dass eine erneute, gezielte (nicht binary-weite) Ghidra-Analyse mit anderen Analyzer-Einstellungen (insb. „ASCII Strings“ und „x86 Constant Reference Analyzer“ in korrekter Reihenfolge/mit höherem Aufwand) mehr Xrefs zutage fördern würde – dies wurde nicht getestet, da die Aufgabenstellung ausdrücklich keine weitere Vollanalyse verlangt.
+
+### UNKNOWN
+
+- Warum Ghidras Referenzerkennung selbst für nachweislich verwendete Kontrollgruppen-Strings versagt, bleibt technisch ungeklärt (mögliche Ursachen: String-Pooling/Merging durch den Compiler, das RIP-relative Referenzen auf ungewöhnliche Weise erzeugt; unvollständige Disassemblierung großer Codebereiche wie in der Hauptanalyse dokumentiert; eine Eigenheit dieses spezifischen, zuvor korrupt gewesenen Ghidra-Projekts). Eine abschließende Ursachenklärung war mit den in dieser Phase eingesetzten Mitteln nicht möglich.
+- Die zentrale Frage aus der Hauptanalyse (`FSessions1047::JoinSession` → Maverick/EOS/Steam/direkte Adresse?) bleibt **UNKNOWN** – diese Phase liefert keinen brauchbaren Code-Einstiegspunkt, weder für die `1047`-Strings noch für die Kontrollgruppe.
+
+### Ergebnis der Kontrollgruppe
+
+**Kontrollgruppe bestätigt Fall „allgemeines Analyseproblem“, nicht Fall „1047-spezifisch fehlend“:** `ClientTravel` und `PendingNetGame` haben ebenso 0 Code-Xrefs wie alle zehn `1047`/`Maverick`-Strings. Das ist gemäß Aufgabenstellung (Abschnitt 6) das aussagekräftigste Einzelergebnis dieser Phase.
+
+### Brauchbarer Code-Einstiegspunkt gefunden?
+
+**Nein.** Für keinen der zwölf getesteten Strings (weder Substring- noch wahre Start-Adresse, weder über direkte Xrefs noch über die Pointer-Tabellen-Suche mit anschließender Slot-Referenzprüfung) konnte eine tatsächliche, verwertbare Code-Adresse ermittelt werden, von der aus eine Funktion definiert und dekompiliert werden könnte.
+
+### Fazit (Erfolgskriterium Abschnitt 10 der Aufgabenstellung)
+
+**Fall C:** `Ghidra static Xref recovery is insufficient for this binary with current analysis state.` Weder Fall A (String → echter Code-Xref) noch Fall B (mehrere Strings → gemeinsamer Codebereich) konnte erreicht werden. Gemäß Aufgabenstellung wird die Suche nach weiteren Xrefs an dieser Stelle **eingestellt**, statt ohne konkreten Erkenntnisgewinn fortgesetzt zu werden.
+
+### Auswirkung auf die Eignung von Ghidra für die `FSessions1047`-Analyse
+
+Ghidra bleibt grundsätzlich geeignet für statische Analyse dieses Binaries (PE-Struktur, Funktionszählung, Decompiler-Einzelabfragen an bekannten Adressen funktionieren, siehe Hauptanalyse), ist aber **in seinem aktuellen Analysezustand für automatisierte Xref-basierte Call-Graph-Rekonstruktion bei diesem spezifischen Binary nicht geeignet** – auch nicht für nachweislich verwendete, generische Engine-Strings. Eine Fortsetzung der `FSessions1047`-Untersuchung würde entweder (a) eine grundlegend andere Technik erfordern (z. B. manuelle Instruktions-für-Instruktions-Disassemblierung ausgehend von plausiblen Codebereichen, unabhängig von Ghidras automatischer Funktionserkennung), oder (b) einen Methodenwechsel weg von diesem Ghidra-Projektzustand.
