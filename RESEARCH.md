@@ -268,4 +268,99 @@ Die 10 wichtigsten als Nächstes zu untersuchenden Punkte:
 
 ---
 
+## Dedicated Server Target / Server Code Analysis
+
+Untersuchungsdatum: 2026-09-07 (Fortsetzung).
+Methode: Gezielte Auswertung des bereits vorhandenen `strings`-Dumps (`-n 6`, 442.785 Zeilen) der Haupt-Shipping-Exe (`PortalWars2-Win64-Shipping.exe`) sowie Kontext-Analyse benachbarter Zeilen (UE-Name-Pool-Cluster). Keine Datei verändert, kein Disassembling, keine Umgehung von Schutzmechanismen.
+
+### Hintergrund (Unreal-Standardverhalten, nicht angenommen sondern nur als Referenzrahmen)
+
+Unreal Engine unterscheidet normalerweise drei Build-Targets pro Projekt: `Game`/`Client`, `Server`, `Editor`. Ein `Server`-Target wird üblicherweise über `TargetType.Server` in einer `<Projekt>Server.Target.cs`-Datei definiert und kompiliert einen separaten `<Projekt>Server.exe` (bzw. unter Linux ein `.sh`/ELF-Binary ohne `-Server`-Suffix im Dateinamen, aber mit `Linux`-Verzeichnis statt `Win64`). Zur Laufzeit wird zwischen Client/Server u. a. über das Makro `UE_SERVER`, das Kompilierungsflag `WITH_SERVER_CODE` sowie den Enum-Wert `NM_DedicatedServer` (Teil von `ENetMode`, Werten wie `NM_Standalone`, `NM_DedicatedServer`, `NM_ListenServer`, `NM_Client`) unterschieden. Diese Fakten dienen hier nur als Referenzrahmen für die Bewertung der Funde – **es wird nicht angenommen, dass PortalWars2 exakt diesem Standardmuster folgt**, ohne dass die Funde das stützen.
+
+### 1. Evidenz für ein separates `Server`-Target
+
+**UNKNOWN.** Keine der gesuchten Marker-Strings (`TargetType.Server`, `Server.Target.cs`, `PortalWars2Server`, `Win64-Server`, `-Server.exe`, `-Server.target`) wurde im extrahierten Client-Binary gefunden. Es existiert weiterhin (wie in Abschnitt 3 bereits festgestellt) keine separate Server-Executable im installierten Verzeichnisbaum, und es wird auf keine `.pdb`-Datei mit "Server" im Namen verwiesen – der einzige referenzierte PDB-Name ist `PortalWars2-Win64-Shipping.pdb` (Client).
+Interpretation: Das ist erwartbar, da UE-Zielnamen (`Server.Target.cs`, `TargetType.Server`) reine Build-Zeit-Artefakte des UnrealBuildTool sind und in einem fertig kompilierten Shipping-Client-Binary grundsätzlich nicht als Strings vorkommen – ihr Fehlen ist **kein Beleg gegen** die Existenz eines Server-Targets im (nicht vorliegenden) Quellcode, sondern schlicht nicht ermittelbar aus dieser Analyseebene.
+
+### 2. Server-only-Code im Client kompiliert?
+
+**HYPOTHESIS.** Es gibt keinen direkten Beleg (weder für noch gegen), da `UE_SERVER`- und `WITH_SERVER_CODE`-Präprozessor-Makros zur Compile-Zeit aufgelöst werden und im fertigen Binary nicht als Strings erscheinen (0 Treffer für beide, siehe Abschnitt 3 unten – erwartungsgemäß, kein Aussagewert). Die Anwesenheit vollständiger Gameplay-Framework-Klassen (`GameMode`, `GameState`, `GameSession`, `PlayerState`, s. u.) zeigt lediglich, dass der generelle Netzwerk-/Gameplay-Code (der in UE typischerweise in `Client`- **und** `Server`-Targets gleichermaßen kompiliert wird, siehe unten) vorhanden ist – das ist bei jedem UE-Multiplayer-Client so und beweist keinen separaten Server-Code-Pfad.
+
+### 3. `UE_SERVER` / `WITH_SERVER_CODE`
+
+**VERIFIED (Abwesenheit als String).** 0 Treffer für `UE_SERVER`, `WITH_SERVER_CODE`, `NM_DedicatedServer`, `IsRunningDedicatedServer`, `IsDedicatedServer` (case-insensitive durchsucht). Auch für den vollständigen `ENetMode`-Enum-Namensraum (`NM_Standalone`, `NM_Client`, `NM_ListenServer`) wurden keine Treffer gefunden – lediglich unverwandte `NM_`-Präfix-Strings aus dem Mesh-Editing-Kontext (`NM_RecalculateNormals` etc.).
+**Wichtige Einschränkung (explizit gemäß Aufgabenstellung):** Dieses Fehlen ist **kein Beweis der Abwesenheit** der zugrunde liegenden Funktionalität. `ENetMode` ist in der UE ein reines natives C++-Enum (kein `UENUM()`), dessen Werte nicht über das Reflection-System als Strings serialisiert werden – solche Enum-Namen sind in **jedem** UE-Shipping-Build (auch offiziellen Dedicated-Server-Builds) nur im Quellcode/PDB vorhanden, nicht im kompilierten Binary. Die Nicht-Auffindbarkeit sagt daher nichts über die tatsächliche Server-Fähigkeit aus – sie ist methodisch zu erwarten und daher **neutral**, nicht negativ zu werten.
+
+### 4. `NM_DedicatedServer`
+
+**UNKNOWN**, siehe Punkt 3 – aus den genannten Gründen (natives Enum, keine Reflection-Strings) grundsätzlich nicht per `strings`-Analyse prüfbar, unabhängig davon ob der Code vorhanden ist oder nicht.
+
+### 5. `GameMode`, `GameState`, `GameSession`, `PlayerState` etc.
+
+**VERIFIED.** Alle gesuchten Basis-Framework-Bestandteile sind als Strings/FNames im Client-Binary vorhanden:
+- `GameMode` (20 Treffer, u. a. `OnRep_GameModeClass`, `GameModeId`, `GameModeName`, `GameOptions.Property.GameMode.*`)
+- `GameState` (u. a. `GF1047GameplayMessage_GameState`, `GF1047ReplicatedMinimalGameStatEntry`)
+- `GameSession` (als eigenständiges FName-Pool-Element, direkt neben `GameNetDriver`/`MeshNetDriver`/`DemoNetDriver`, siehe Punkt 6)
+- `PlayerState` (u. a. `OnRep_PlayerState`, `OnRep_KilledPlayerState`, `GF1047PlayerStateWrapper`, `PortalWarsCapturePointTeamPlayerStates`)
+- `PlayerController` (nur 1 indirekter Treffer: `AAT1047InputRecorderActorBase::TryInitializePlayerController` – die Basisklasse `APlayerController` selbst taucht nicht als eigener String auf, vermutlich weil UE C++-RTTI/Typeinfo-Strings in Shipping-Builds für Engine-eigene UObject-Klassen i. d. R. nicht emittiert werden, s. u.)
+
+**Interpretation:** Der Client enthält das vollständige, unveränderte UE-Multiplayer-Gameplay-Framework (`AGameModeBase`/`AGameStateBase`/`AGameSession`/`APlayerState`/`APlayerController`-Ökosystem). Dies ist Standard für **jeden** UE-Multiplayer-Client, unabhängig davon, ob ein separates Server-Target existiert – `GameMode` selbst läuft in UE ausschließlich serverseitig (bzw. auf dem Host bei Listen-Server), ist aber aus technischen Gründen (Klassenhierarchie, Reflection) auch im reinen Client-Build mitkompiliert, da die UE-Klassenhierarchie nicht pro Target aufgespalten wird, sondern zur Laufzeit über `GetNetMode()` gesteuert wird.
+
+**Zusätzlicher Fund (custom, nicht Standard-UE):** Es existiert ein datengetriebenes "Experience"-System (`GF1047ExperienceConfig`, `GF1047ExperienceBlock`, `GF1047ExperienceKey`, `GF1047ExperienceReplicationData`, `OnRep_CurrentExperienceBlock`, `OnRep_NextExperience`, `ExperienceStateMachine`) – das entspricht strukturell dem Muster aus Epics offiziellem Multiplayer-Referenzprojekt **"Lyra"** (datengetriebene Experience-Definitionen statt klassischer 1:1-GameMode-pro-Karte-Zuordnung). **STRONGLY INDICATED**, dass PortalWars2 auf dem Lyra-Framework aufbaut oder architektonisch stark daran angelehnt ist – dies ist aus reiner String-Analyse nicht zu 100% beweisbar, aber die Namensmuster (`Experience...Block`, `...Outcome`, `OnRep_CurrentExperienceBlock`) sind sehr spezifisch für Lyra-artige Architekturen.
+
+### 6. `NetDriver` / `MeshNetDriver`
+
+**VERIFIED.** Folgende NetDriver-bezogene FNames/Symbole sind im Binary vorhanden:
+```
+GameNetDriver        (UE-Standardname für den primären NetDriver)
+DemoNetDriver         (UE-Standard, Replay-System)
+BeaconNetDriver       (UE-Standard, für Online-Beacon-Verbindungen)
+PendingNetDriver       (UE-Standard, Verbindungsaufbau-Phase)
+NamedNetDriver         (UE-Standard-Basistyp für FName-referenzierte Driver)
+NetDriverDefinition     (UE-Standard, Konfigurationsschlüssel für NetDriverDefinitions-Array)
+IrisNetDriverConfig     (UE5-Iris-Replikationssystem, s. u.)
+NetDriverReplicationSystemConfig (UE5-Iris)
+MeshNetDriver         (NICHT Standard-UE – projektspezifisch)
+```
+`MeshNetDriver` liegt im extrahierten Name-Pool-Cluster **direkt neben** `GameNetDriver`, `DemoNetDriver`, `GameSession`, `BeaconPort`, `GamePort` und **`MeshPort`** (ein weiterer projektspezifischer FName, strukturell analog zu den UE-Standardfeldern `GamePort`/`BeaconPort` einer `FURL`/Engine-Konfiguration).
+
+**STRONGLY INDICATED:** Die Kombination aus `MeshNetDriver` + eigenem `MeshPort`-Konfigurationsfeld (im selben Namens-Cluster wie die Standard-Felder `GamePort`/`BeaconPort`) ist ein starkes Indiz dafür, dass PortalWars2 einen **zusätzlichen, projektspezifischen NetDriver mit eigenem Netzwerk-Port** registriert – analog zum UE-Standardmuster, bei dem `DemoNetDriver` ein zweiter, parallel zum `GameNetDriver` laufender Driver ist. Der Name "Mesh" korreliert plausibel mit dem bereits in Abschnitt 6 (P2P) und dem Build-Pfad "PW2-P2P-Full" dokumentierten Peer-to-Peer-Networking-Ansatz – eine Mesh-Topologie (jeder Client mit jedem verbunden, ggf. über EOS-P2P als Transport) würde einen eigenen NetDriver mit eigenem Port plausibel erklären.
+
+**Wichtige Einschränkung:** Dies ist eine **Namens-basierte Korrelation, kein Funktionsnachweis**. Ob `MeshNetDriver` tatsächlich für Spiel-Replikation zwischen mehreren Peers ohne zentralen Host verwendet wird, für reines Voice-Chat-Routing, oder für einen ganz anderen Zweck (z. B. Tool-/Editor-Feature, das lediglich mitkompiliert wurde), ist aus dieser Analyseebene **nicht** bestimmbar (UNKNOWN).
+
+**Zusätzlich VERIFIED:** Der Client nutzt das neue **UE5-Iris-Replikationssystem** (`EReplicationSystem::Iris`, `ObjectReplicationBridgeDeltaCompressionConfig`, `ObjectReplicationBridgeFilterConfig`, `ObjectReplicationBridgePollConfig`, `ObjectReplicationBridgePrioritizerConfig`, `NetDriverReplicationSystemConfig`) statt des klassischen `ReplicationGraph`-Systems (0 Treffer für `ReplicationGraph`). Iris ist das UE5.4+ Standard-Replikationssystem und unterstützt grundsätzlich sowohl klassische Client-Server- als auch komplexere Multi-Connection-Topologien – **UNKNOWN**, ob dies spezifisch für den Mesh-P2P-Ansatz gewählt wurde oder schlicht die neue UE5-Engine-Voreinstellung ist.
+
+**Zusätzlich VERIFIED:** Echte UE-Online-Beacon-Klassen sind vorhanden: `APartyBeaconHost::UpdatePartyReservation` und `APartyBeaconClient::RequestAddOrUpdateReservation`. Das Beacon-System wird in UE typischerweise für Pre-Login-Reservierungen gegen einen (dedizierten oder Listen-)Server verwendet, bevor die volle Spielverbindung aufgebaut wird (bekanntes Muster u. a. aus Fortnite). Die **Host**-seitige Klasse (`APartyBeaconHost`) ist im Client-Binary vorhanden – das beweist nicht, dass der Client sie tatsächlich instanziieren *kann* (Klassenhierarchien werden in UE i. d. R. nicht pro Target ausgedünnt), zeigt aber, dass der Reservierungs-Mechanismus für dedizierte/Listen-Server-Verbindungsaufbau grundsätzlich Teil der kompilierten Codebasis ist.
+
+### 7. Server-spezifische Kommandozeilenargumente
+
+**UNKNOWN / schwach indiziert.** Ein isolierter String-Token `-server` wurde gefunden (exakter Zeilentreffer, keine erkennbare direkte Nachbarschaft zu eindeutig serverbezogenen Strings im Rohdump – String-Reihenfolge im Dump folgt der Binärlayout-Reihenfolge, nicht der semantischen Zugehörigkeit). Das ist der Text des UE-Standardkommandozeilenschalters `-server` (üblicherweise zusammen mit `FParse::Param(TEXT("server"))` verwendet, um `GIsServer`/Testmodi zu erzwingen), kann aber ohne Disassembly nicht sicher einer aktiven Codepfad-Prüfung zugeordnet werden. Keine Treffer für `?dedicated`, `?listen`, `multihome`, `bIsLanMatch`/`LANBeacon`. **HYPOTHESIS**: Der `-server`-String könnte ein Überbleibsel aus mitkompiliertem Engine-Code sein (der String gehört zum Core-UE-Kommandozeilen-Parser, nicht notwendigerweise zu projekteigenem Code).
+
+### 8. Listen-Server-Verhalten
+
+**UNKNOWN.** Keine direkten Belege (`NM_ListenServer`, `ListenServer`, `"listen"`-Netzwerkkontext) gefunden – alle `listen`-Treffer im Rohdump stammen ausschließlich aus mitgelinktem Envoy-Proxy-Protobuf-Code (`envoy.config.listener.v3.*`, gRPC-Transport-Infrastruktur) und haben **keinen** Bezug zu UE-Gameplay-Networking. Das entkräftet nicht die Möglichkeit von Listen-Server-Code (siehe Punkt 3 zur methodischen Einschränkung bei nativen Enums), liefert aber auch keinen positiven Beleg.
+
+### 9. Könnte der Client theoretisch einen Listen-Server hosten?
+
+**HYPOTHESIS, nicht verifizierbar aus dieser Analyseebene.** Da (a) das komplette `AGameModeBase`/`AGameStateBase`/`AGameSession`-Framework kompiliert vorliegt, (b) NetDriver-Infrastruktur inkl. Iris-Replikationssystem vorhanden ist, und (c) UE-Clients technisch grundsätzlich `NM_ListenServer` unterstützen können, solange der entsprechende Code nicht per `#if WITH_SERVER_CODE`/Build-Konfiguration entfernt wurde, ist ein Listen-Server-Betrieb **denkbar**. Ob 1047 Games diesen Pfad im Shipping-Client aktiv gelassen oder herausgestrippt hat, ist **nicht** aus `strings`-Analyse bestimmbar (dazu wäre Laufzeit-/Disassembly-Analyse nötig, die außerhalb des Scopes dieser Untersuchung liegt).
+
+### 10. Evidenz für eine separate, nicht mitgelieferte Original-Server-Binary
+
+**STRONGLY INDICATED** (Fortführung von Abschnitt 8/11 der Haupt-Analyse): Der gefundene gRPC-Service `maverick.dsm.DedicatedServerManager` mit `AllocateServer`/`DeallocateServer`/`GameServerInitialized` impliziert praktisch zwingend, dass irgendwo eine tatsächliche **Server-Binary** existiert haben muss, die vom DSM-Backend alloziert und gestartet wurde ("GameServerInitialized" ist ein Callback, den eine laufende Server-Instanz an das Backend meldet). Diese Binary ist jedoch **nicht Teil des über Steam ausgelieferten Client-Pakets** – Cloud-Dedicated-Server-Builds werden in der Branchenpraxis grundsätzlich separat gebaut, containerisiert/deployt und niemals über den Client-Downloadkanal verteilt. Dies ist **kein neuer String-Fund**, sondern eine logische Schlussfolgerung aus dem bereits in Abschnitt 8 dokumentierten DSM-API.
+**UNKNOWN** bleibt, ob diese Server-Binary aus demselben Quellcode-Baum wie der Client kompiliert wurde (gemeinsames UE-Projekt mit `Server`-Target) oder ein architektonisch komplett getrenntes Repository/Build ist.
+
+### 11. Auswirkung auf die Einschätzung der Community-Dedicated-Server-Machbarkeit
+
+Die neuen Funde **bestätigen und verfeinern**, ändern aber nicht grundlegend die bereits in Abschnitt 11 der Haupt-Analyse getroffene Einschätzung:
+
+- Die Vermutung eines Cloud-DSM-Modells wird durch das vollständig vorhandene UE-Gameplay-Framework (`GameMode`/`GameState`/`GameSession`) im Client **gestützt** (der Client ist technisch in der Lage, dieselbe Gameplay-Logik wie ein Server auszuführen – üblich bei UE, aber Voraussetzung dafür, dass ein Community-Server *grundsätzlich* aus vorhandenem Code-Wissen heraus nachvollzogen werden könnte, falls der Quellcode je verfügbar würde).
+- Der neue `MeshNetDriver`/`MeshPort`-Fund liefert das bisher konkreteste (wenn auch weiterhin indirekte) Indiz für einen **echten, gesondert benannten P2P-Netzwerkpfad** neben dem regulären `GameNetDriver` – das stützt die Hypothese aus Abschnitt 6 der Haupt-Analyse, dass P2P (evtl. für Custom-/Privat-Matches) ein eigenständiger, potenziell vom Maverick-Backend unabhängigerer Pfad sein könnte, was für eine Community-Lösung der vielversprechendere (weil kleinere) Ansatzpunkt wäre als der Nachbau des gesamten DSM/Matchmaking-Stacks.
+- **Kein Fund** in dieser Runde ändert die Kernaussage, dass im ausgelieferten Client **keine lauffähige Server-Binary** enthalten ist und ein Community-Dedicated-Server (im klassischen Sinne: eigener Prozess, den Spieler selbst hosten) ohne Zugriff auf Quellcode oder eine tatsächliche Server-Binary **nicht** einfach durch Umbenennen/Umkonfigurieren des Client-Builds realisierbar ist – UE-Shipping-Client-Builds sind i. d. R. nicht direkt in einen funktionsfähigen Dedicated-Server verwandelbar, selbst wenn Gameplay-Code mitkompiliert ist, da kritische Server-Infrastruktur (Autorität, Anti-Cheat-Validierung, Zugriff auf verschlüsselte/gestreamte Assets, Beacon-Host-Logik) typischerweise zusätzliche, nicht triviale Voraussetzungen hat.
+
+---
+
 *Hinweis: Diese Analyse beruht ausschließlich auf statischer Untersuchung vorhandener Dateien (Verzeichnisstruktur, Dateitypen, extrahierte Textstrings aus Binärdateien). Es wurde kein Code disassembliert, kein Anti-Cheat/DRM analysiert oder umgangen, und keine Datei der Installation verändert.*
+
+## Next Steps
+
+Der nützlichste nächste Untersuchungsschritt basierend auf diesen Funden: **Dynamische Analyse statt weiterer Strings-Suche.** Da die verbleibenden offenen Fragen (aktive Nutzung von `MeshNetDriver` im Gameplay, tatsächliches Vorhandensein von `WITH_SERVER_CODE`-Codepfaden, Funktionsfähigkeit von `-server`) prinzipbedingt nicht mehr per `strings`-Extraktion beantwortbar sind, wäre der wertvollste nächste Schritt eine **Disassembly-gestützte Analyse der `PortalWars2-Win64-Shipping.exe`** (z. B. mit Ghidra/IDA, rein lesend, ohne Patchen) gezielt an den Referenzstellen der gefundenen Symbole `MeshNetDriver`, `MeshPort` und `GameSession`, um zu klären, ob und wie diese zur Laufzeit tatsächlich verdrahtet sind – sowie ergänzend eine passive Netzwerkbeobachtung beim (versuchten) Programmstart, um zu sehen, ob der Client überhaupt noch einen Verbindungsversuch zu einem NetDriver-Port unternimmt, bevor das Maverick-Backend antwortet.
