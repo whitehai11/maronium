@@ -651,3 +651,91 @@ Reine Reflection-/String-Analyse liefert an diesem Punkt **konkrete Funktions- u
 - **Zu beantwortende Frage:** Mündet `FSessions1047::JoinSession()` (oder Äquivalent) in einen Aufruf von `GetResolvedConnectString()`/`ClientTravel()`/`UPendingNetGame`, der ausschließlich mit einer von Maverick (`LobbyManager.RequestGameServer`/`DedicatedServerManager.AllocateServer`) gelieferten Adresse funktioniert – oder existiert ein Codepfad, der ohne erreichbares Maverick-Backend (z. B. rein über EOS-P2P, Steam-P2P oder eine lokale Adresse) zu einer gültigen Verbindung führen kann?
 
 **Noch nicht durchgeführt:** Es wurde in dieser Phase weiterhin **kein** Disassembler installiert oder verwendet – dies ist lediglich die dokumentierte Entscheidungsgrundlage für einen möglichen nächsten, gesondert zu autorisierenden Schritt.
+
+---
+
+## Ghidra Analysis: FSessions1047 / FAuth1047
+
+### Method
+
+- **Werkzeug:** Ghidra 12.1.3 PUBLIC, headless (`analyzeHeadless`/`pyghidraRun -H`), read-only statische Analyse (`-readOnly` bei allen Abfrage-Läufen).
+- **Zielbinary:** `PortalWars2/Binaries/Win64/PortalWars2-Win64-Shipping.exe`.
+- **Vorgehen:** (1) Ein bereits bestehendes, lokal in der Spielinstallation abgelegtes Ghidra-Projekt (`RemappedPlugins/sad.rep`) wurde wiederverwendet. (2) Da die interaktive GUI-Sitzung nur eine minimale/unvollständige Analyse aufwies (Funktionskörper oft nur 1 Byte lang, 0 erkannte Ziel-Strings trotz 3,1 Mio. "Defined Data"-Einträgen), wurde eine vollständige Standard-Auto-Analyse headless nachgeholt (`analyzeHeadless` ohne `-noanalysis`, Standard-Analyzer, keine experimentellen Einstellungen, Laufzeit ca. 73 Minuten). (3) Der finale Speichervorgang dieser Analyse schlug mit `java.io.IOException: Corrupted BufferMgr state` fehl; ein Lese-Diagnosescript bestätigte jedoch, dass die Analyseergebnisse trotzdem lesbar sind (562.870 erkannte Funktionen). (4) Da Ghidras `getDefinedData()`-Iterator weiterhin keine der gesuchten Strings fand, wurde stattdessen eine **rohe Byte-Muster-Suche** (`Memory.findBytes`, ASCII **und** UTF-16LE) direkt im Programmspeicher durchgeführt – unabhängig davon, ob Ghidra die Bytes als "String"-Datentyp klassifiziert hat. (5) Für gefundene Adressen wurden `ReferenceManager.getReferencesTo()`, `FunctionManager.getFunctionContaining()`, `getCalledFunctions()`/`getCallingFunctions()` sowie der Decompiler (`DecompInterface`) abgefragt. (6) Ein Sanity-Check an einer garantiert aufgerufenen Funktion (`entry` → `FUN_14e6d07fc`) verifizierte, dass der Xref-Mechanismus grundsätzlich funktioniert. Alle Skripte liefen als `-postScript` in Ghidras Headless-Analyzer (Python 3 via PyGhidra), Ergebnisse wurden in Textdateien geschrieben und ausgelesen. Keine Datei des Spiels wurde verändert; keine Anti-Cheat-/DRM-/Auth-Umgehung; kein Spielstart.
+
+### VERIFIED
+
+- **Alle gesuchten Ziel-Strings existieren als reale, lokalisierbare Bytefolgen im Speicher-Image der Shipping-Exe**, mit exakten virtuellen Adressen (Auszug, vollständige Liste im Rohdatensatz `ghidra_findings_v2.txt`):
+
+| String | Adresse(n) | Encoding |
+|---|---|---|
+| `1047.Online.Maverick.ForceHttpInsteadOfGrpc` | `0x150362080` | UTF-16LE |
+| `MaverickLoginStatusChanged` | `0x1503c5380` | UTF-16LE |
+| `Login1047` | `0x1503c5368` | UTF-16LE |
+| `RefreshAuthToken1047` | `0x1503c5338` | UTF-16LE |
+| `FSessions1047` | `0x1503c45e4` | UTF-16LE |
+| `FSessionsCommon` | `0x1503c4444` | UTF-16LE |
+| `FAuth1047` | `0x1503c453c`, `0x1505d0ab4` | UTF-16LE |
+| `FAuthCommon` | `0x1503c448c` | UTF-16LE |
+| `FSessionsLAN` | `0x15026a884` (ASCII), `0x1503c44fc` (UTF-16LE) |
+| `GetResolvedConnectString` | `0x1509fbbf2`, `0x1509fbe2e`, `0x1509fbebe` | UTF-16LE |
+| `FOnlineSessionSteam::JoinSession` | `0x1509fb850` | ASCII |
+| `FOnlineSessionSteam::CreateSession` | `0x1509fafd0` | ASCII |
+| `steam.%s:%d` | `0x1509fbd18` | UTF-16LE |
+| `MeshNetDriver` | `0x14f51b5a0` (ASCII), `0x14f51a768` (UTF-16LE) |
+| `MeshPort` | `0x14f51b680` (ASCII), `0x14f51a828` (UTF-16LE) |
+| `GameNetDriver` | `0x14f51b570` (ASCII), `0x14f51a6b8`/`0x14fe82cd6`/`0x14fe83302`/`0x14fe95c1a` (UTF-16LE) |
+| `EOS_P2P_SendPacket` | `0x151b068b4` | ASCII |
+| `EOS_P2P_ReceivePacket` | `0x151b068ca` | ASCII |
+
+- **Xref-Mechanismus funktioniert grundsätzlich korrekt** (Sanity-Check): Die Funktion an `0x14e6d07fc` hat nachweisbar 2 Referenzen, darunter einen `UNCONDITIONAL_CALL` von `0x14e6d02c8` (= `entry`+4) – exakt der Aufruf, der bereits in Phase 6 im Decompiler-Output von `entry` sichtbar war. Das bestätigt, dass die Ghidra-API-Abfragen selbst korrekt funktionieren.
+- **Die Funktionsgrenzen-Erkennung (Function Body/Bounds) ist für praktisch alle untersuchten Funktionen unvollständig.** Beispiel: Die Funktion `entry` hat laut `getBody()` nach vollständiger Auto-Analyse weiterhin nur den Adressbereich `[0x14e6d02c4, 0x14e6d02c4]` (1 Instruktion), obwohl der Decompiler (der eigene Kontrollfluss-Analyse betreibt) für dieselbe Adresse einen vollständigen, mehrzeiligen Funktionskörper mit mehreren Sub-Aufrufen rekonstruieren kann (siehe Phase 6). Als direkte Folge liefert `getCalledFunctions()` für `entry` **0** Funktionen, obwohl der Decompiler-Output mindestens 6 Sub-Aufrufe zeigt.
+- **Für alle elf gesuchten `1047`/`Maverick`/`Session`-Strings (`FSessions1047`, `FAuth1047`, `GetResolvedConnectString`, `Login1047`, `RefreshAuthToken1047`, `MaverickLoginStatusChanged`, `ClientTravel`, `PendingNetGame`, `MeshNetDriver`, `MeshPort`, `GameNetDriver`, EOS-P2P-Funktionsnamen etc.) liefert `ReferenceManager.getReferencesTo()` durchgehend 0 Treffer** – mit einer einzigen Ausnahme (`AccountInfo1047`, 1 Treffer von `0x14293d03b`, aber **ohne zugehörige Funktion** – die referenzierende Adresse liegt in einem Codebereich, den Ghidra nicht als Teil einer Funktion erkannt hat).
+
+### STRONGLY INDICATED
+
+- Die Kombination aus (a) korrekt funktionierendem Xref-Mechanismus im Allgemeinen (Sanity-Check bestanden), (b) systematisch fehlenden Xrefs zu allen projektspezifischen `1047`/`Maverick`-Strings, und (c) unvollständiger Funktionsgrenzen-Erkennung selbst im einfachen CRT-Startup-Code spricht dafür, dass **große Teile des tatsächlichen Codes, der diese Strings referenziert, von Ghidras Standard-Auto-Analyse gar nicht als Code disassembliert/entdeckt wurden** – nicht, weil die Referenzen nicht existieren, sondern weil die entsprechenden Aufrufstellen für die rekursive Disassemblierung ausgehend von bekannten Einstiegspunkten nicht erreichbar waren. Dies ist bei stark virtuelle-Funktionen-/Interface-lastigem C++-Code (wie UE5s UObject-/`UE::Online`-Interface-Architektur, die praktisch durchgehend über virtuelle Dispatch-Tabellen arbeitet) ein bekanntes Problem für automatisierte Disassembler ohne zusätzliche Vtable-/RTTI-Rekonstruktion.
+
+### HYPOTHESIS
+
+- Es ist plausibel, dass eine gezielte, manuelle Vtable-Rekonstruktion oder das Erzwingen von Disassemblierung an den unmittelbar vor/nach den gefundenen String-Adressen liegenden Codebereichen (z. B. durch manuelles Setzen von Funktionsstart-Punkten in Ghidra) weitere Ergebnisse liefern könnte – dies wurde in dieser Phase nicht getestet.
+- Es bleibt plausibel (aber unbewiesen), dass `FSessions1047::JoinSession` tatsächlich existiert und aufgerufen wird – lediglich der konkrete Code dafür wurde durch die aktuelle Analyse nicht lokalisiert.
+
+### UNKNOWN
+
+- **Die zentrale Forschungsfrage bleibt UNKNOWN:** Ob `FSessions1047::JoinSession()` zwingend über Maverick zu einer Connection-Adresse führt, oder ob ein backend-freier Pfad (Steam-P2P, EOS-P2P, LAN, direkte Adresse) existiert, konnte mit den verfügbaren Mitteln (ein Standard-Ghidra-Auto-Analyse-Durchgang, read-only) **nicht** aus dem Code rekonstruiert werden. Es wurde kein einziger Call-Site-Nachweis gefunden, der `FSessions1047`, `FAuth1047`, `GetResolvedConnectString`, `ClientTravel`, `MeshNetDriver`, `GameNetDriver` oder die EOS-P2P-Funktionen tatsächlich in einer Aufrufbeziehung zueinander zeigt.
+- Alle in Phase 9 der Aufgabenstellung genannten Detailfragen (welche Session-ID, welche Datenquelle, welche Adresse, welche nachfolgenden Calls) bleiben **UNKNOWN** aus denselben Gründen.
+- Warum die Standard-Analyse diese spezifischen Codebereiche nicht erreicht hat (indirekte Aufrufe über Vtables? Funktionspointer-Tabellen? Ein von den Entry-Points aus nicht erreichbarer, nur über Reflection/Function-Pointer-Registrierung aufgerufener Code?) ist selbst **UNKNOWN**.
+
+### Call Graph
+
+```text
+entry (0x14e6d02c4)
+ └── FUN_14e6d07fc   [VERIFIED per Decompiler + Xref-Sanity-Check]
+      (weitere Sub-Calls im Decompiler-Output sichtbar, aber nicht
+       über Function-Body-API abfragbar, s. o.)
+
+FSessions1047::JoinSession  → NICHT LOKALISIERT (kein Xref zur Klassennamen-
+                               /Methodennamen-String-Adresse 0x1503c45e4 gefunden)
+FAuth1047::Login             → NICHT LOKALISIERT (kein Xref zu 0x1503c5368
+                               "Login1047" gefunden)
+GetResolvedConnectString()   → 3 String-Adressen bekannt (0x1509fbbf2 u.a.,
+                               im selben Datenblock wie FOnlineSessionSteam::
+                               JoinSession/CreateSession, s. Phase 5) →
+                               KEINE Code-Xrefs zu diesen Adressen gefunden
+```
+
+Alle nicht dargestellten Zweige der in der Aufgabenstellung skizzierten Kette (`FSessions1047::JoinSession → Maverick? → EOS? → Steam? → GetResolvedConnectString? → ClientTravel? → NetDriver?`) sind **UNKNOWN** – für keinen einzigen Zweig konnte eine tatsächliche Aufrufbeziehung im Code nachgewiesen werden.
+
+### Architectural Conclusion
+
+**`UNKNOWN`**
+
+Gemäß der ausdrücklichen Vorgabe der Aufgabenstellung darf keine der Kategorien BACKEND-BOUND, ALTERNATIVE TRANSPORT oder HYBRID allein aufgrund von String-Funden vergeben werden. Da in dieser Phase trotz vollständiger Ghidra-Auto-Analyse und funktionierendem Xref-Mechanismus **keine einzige tatsächliche Code-Aufrufbeziehung** zwischen `FSessions1047`/`FAuth1047` und Maverick-, EOS-P2P-, Steam- oder NetDriver-Code nachgewiesen werden konnte, ist ausschließlich `UNKNOWN` gerechtfertigt.
+
+### Implication for Maronium
+
+Diese Phase liefert **keine neue architektonische Klärung** der zentralen Transportfrage – sie bestätigt aber mit höherer Präzision (exakte virtuelle Adressen statt nur Datei-Offsets) die bereits bekannten String-Funde und deckt eine **methodische Grenze der Standard-Ghidra-Auto-Analyse** für dieses Binary auf: Ohne zusätzliche, deutlich aufwändigere Techniken (manuelle Vtable-/Interface-Rekonstruktion, gezieltes Erzwingen von Disassemblierung an vermuteten Aufrufstellen, ggf. PDB-/Symbol-Beschaffung falls verfügbar) lässt sich der tatsächliche Verbindungsaufbau-Codepfad nicht statisch rekonstruieren. **Es darf noch keine Implementierung für einen Community-Server geplant werden**, solange die Transportfrage ungeklärt ist – das gilt nach dieser Phase unverändert fort.
+
+### Remaining Unknowns / Next Step
+
+Der nächste sinnvolle Schritt wäre ein gezielter, kleinerer Versuch, an einer der zehn bekannten String-Adressen (z. B. `0x1503c45e4` für `FSessions1047`) manuell in Ghidra rückwärts durch den unmittelbar umgebenden, bereits vorhandenen Funktionscontainer (z. B. über `getInstructionAt`/vorherige Instruktionen ab der Adresse, an der ein `LEA`/`MOV`-Befehl auf diese Adresse zeigen müsste) zu suchen, statt sich auf Ghidras automatische Referenzerkennung zu verlassen – dies wurde aus Zeit-/Aufwandsgründen in dieser Phase nicht mehr durchgeführt und wäre der logische nächste, weiterhin rein statische Schritt.
