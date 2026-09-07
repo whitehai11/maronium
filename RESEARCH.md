@@ -515,3 +515,139 @@ Diese Phase liefert **keine neue Bestätigung** dafür, dass ein LAN-/Session-ba
 ### 8. Nächster sinnvoller Forschungsschritt
 
 Der wertvollste nächste Schritt ist **nicht** eine weitere `strings`-Suche (dieser Ansatz ist für die verbleibenden Fragen ausgereizt), sondern die Beschaffung und statische Analyse (weiterhin read-only, kein Ghidra vorhanden) von **öffentlich zugänglichem Referenzmaterial**: Der UE5-Engine-Quellcode der Klassen `FOnlineServicesLAN`/`FSessionsLAN` ist bei Epic Games (GitHub, bei vorhandenem Epic-Games-Account einsehbar) frei verfügbar und würde klären, welche Methoden diese Engine-Klasse überhaupt besitzt und ob das beobachtete Fehlen der übrigen LAN-Beacon-Symbole durch Compiler-Inlining/fehlende Log-Strings erklärbar ist oder tatsächlich auf einen unvollständig kompilierten Codepfad hindeutet. Dies würde helfen, zwischen den in Abschnitt 6 offen gebliebenen HYPOTHESIS-Punkten zu unterscheiden, ohne dass ein Disassembler nötig wäre.
+
+**Methodenkorrektur, bestätigt in Phase 5 (siehe unten):** Der bisherige `strings`-Dump wurde ausschließlich mit 8-Bit-ASCII-Encoding (`strings -n 6`) erzeugt. Ein Teil der UE5-Reflection-/Log-Strings liegt im Binary jedoch als **UTF-16LE** vor (Windows-typisch) und wurde dadurch in den Phasen 1–4 systematisch **nicht erfasst**. Dies wird in Phase 5 korrigiert und führt dort zu einer direkten Korrektur einer zuvor als „nicht vorhanden" gemeldeten Erkenntnis (`GetResolvedConnectString`).
+
+---
+
+## OnlineServices1047Developer – Modulanalyse
+
+### Forschungsfrage
+
+Was ist `OnlineServices1047Developer`? Handelt es sich um ein rein internes Developer-/QA-Modul, oder enthält es eigene Session-, Lobby-, Auth-, Connectivity- oder Game-Server-Funktionen mit Relevanz für eine Community-Multiplayer-Architektur?
+
+### Methode
+
+Wie in Phase 4, jedoch **zusätzlich** mit `strings -e l -n 4` (UTF-16LE-Encoding, Minimallänge 4) auf `PortalWars2-Win64-Shipping.exe` – dies deckte einen erheblichen Anteil bisher unentdeckter Reflection-/Log-/CVar-Strings auf, die im rein ASCII-basierten Dump der vorherigen Phasen fehlten. Zusätzlich Kontextauswertung ±30–80 Zeilen um relevante Treffer, um zusammenhängende `.rdata`-Datenblöcke (die – anders als der allgemeine FName-Pool – tatsächlich von räumlich benachbartem, gemeinsam kompiliertem Code stammen können, z. B. Fehlermeldungstabellen einer einzelnen Übersetzungseinheit) von bedeutungslosen Zufallsnachbarschaften zu unterscheiden. Kein Disassembling, keine Programmausführung, keine Dateiänderung.
+
+### 1. Modulkatalog
+
+Vollständig gefundene, dem Modul/Namensraum zweifelsfrei zuordenbare Symbole:
+
+| Symbol | Art | Bewertung |
+|---|---|---|
+| `/Script/OnlineServices1047Developer` | UHT-generierter Package-Pfad | VERIFIED |
+| `OnlineServices1047DeveloperUser` | Reflection-Klasse (UCLASS/USTRUCT) | VERIFIED |
+| `UOnlineServices1047DeveloperSettings` (als `rUOnlineServices1047DeveloperSettings`, führendes „r" ist ein Scan-Artefakt aus dem vorangehenden Wortende) | Settings-UCLASS-Name | VERIFIED (Name), Inhalt/Properties UNKNOWN |
+| `class UE::Online::FAuth1047Developer` | C++-Klassen-Name-String (TTypeName-Reflection, kein UObject-RTTI) | VERIFIED |
+
+**Wichtige Korrektur/Klarstellung:** Der zunächst vielversprechend wirkende String `UTF1047DeveloperSettings` gehört **nicht** zu `OnlineServices1047Developer`. Kontextprüfung zeigt, dass er Teil eines völlig anderen Namensschemas ist: `TF1047` = „TheaterFramework1047", ein Replay-/Zuschauer-Subsystem (`LogTheaterFramework1047`, `ATF1047SpectatorPawn`, `ATF1047ReplayPlayerController`, `UTF1047ReplayGameInstanceSubsystem`). `UTF1047DeveloperSettings` ist also die Settings-Klasse **dieses** Replay/Spectator-Systems, nicht des Online-Services-Moduls. Dies wird hier explizit dokumentiert, um genau den in der Aufgabenstellung angemahnten Fehlschluss aus String-Ähnlichkeit zu vermeiden.
+
+**Weitere Klassen desselben „1047"-Online-Namensraums (nicht spezifisch „...Developer", aber unmittelbar zugehörig):**
+
+| Symbol | Art | Bewertung |
+|---|---|---|
+| `class UE::Online::FAuth1047` | C++-Klasse (Basis-/Prod-Variante der Auth-Implementierung) | VERIFIED |
+| `class UE::Online::FSessions1047` | C++-Klasse (projektspezifische Sessions-Implementierung) | VERIFIED |
+| `class TSharedRef<struct UE::Online::FAccountInfo1047,1>` | C++-Struct `FAccountInfo1047` | VERIFIED |
+| `RefreshAuthToken1047` | Funktions-/Log-String | VERIFIED (Existenz), Aufrufer UNKNOWN |
+| `Login1047` | Funktions-/Log-String | VERIFIED (Existenz), Aufrufer UNKNOWN |
+| `MaverickLoginStatusChanged` | Delegate-/Event-Name, unmittelbar neben `Login1047`/`RefreshAuthToken1047` | VERIFIED (Existenz) |
+| `OnlineServices1047Utils` | Modul-/Utility-Klassenname | VERIFIED (Existenz), Inhalt UNKNOWN |
+| `AccountInfo1047` | zugehöriger Bezeichner | VERIFIED |
+
+Es wurden **keine** `FLobbies1047`, `FConnectivity1047`, `FPresence1047`, `FStats1047` oder `FAchievements1047`-Varianten gefunden (0 Treffer) – die übrigen `UE::Online`-Interfaces (`FLobbiesCommon`, `FConnectivityCommon`, `FPresenceCommon`, `FSocialCommon`, `FUserInfoCommon`, `FLeaderboardsCommon`, `FAchievementsCommon`, `FUserFileCommon`) verwenden offenbar die generischen/Stock-Implementierungen bzw. andere Backends. **VERIFIED**: Der „1047"-Namensraum implementiert nach aktueller Evidenz ausschließlich **`IAuth`** und **`ISessions`**, keine weiteren `UE::Online`-Interfaces.
+
+Es wurde **keine** Factory-/Registrierungs-Symbolik gefunden: `IOnlineServicesFactory`, `OnlineServicesFactory`, `GetServices`, `GetSessionsInterface`, `GetLobbiesInterface`, `GetAuthInterface` – **0 Treffer** für alle sechs. **UNKNOWN**, wie/ob `OnlineServices1047Developer` als eigenständiger, wählbarer Backend-Provider registriert wird.
+
+### 2. Beziehungen zu anderen OnlineServices-Modulen
+
+`FAuth1047`, `FAuth1047Developer` und `FSessions1047` erscheinen im selben `.rdata`-Datenblock wie `class UE::Online::FSessionsCommon`, `class UE::Online::FAuthCommon` und `class UE::Online::FSessionsLAN` (unmittelbare Nachbarschaft, Zeilen ~59193–59202 im UTF-16-Dump). Interpretation: Dies ist eine **Registrierungs-/Vererbungs-Zeile** – typisch für UE5s `TOnlineComponent`-Muster, bei dem projektspezifische Klassen (`FAuth1047`, `FSessions1047`) von den generischen Basisklassen (`FAuthCommon`, `FSessionsCommon`) ableiten. Das ist ein **stärkeres** Indiz als reine FName-Pool-Nachbarschaft (siehe Methodik-Hinweis Phase 3/4), da `TTypeName`-Strings für C++-Template-Typen typischerweise pro Übersetzungseinheit/Header-Include-Reihenfolge zusammenhängend im Binary abgelegt werden. **STRONGLY INDICATED**, dass `FAuth1047`/`FAuth1047Developer` von `FAuthCommon` und `FSessions1047` von `FSessionsCommon` erben (Standard-UE5-`OnlineServices`-Architekturmuster) – **nicht** durch Disassembling verifiziert, aber durch die Kombination aus Namensmuster und Datenblock-Kohärenz plausibler als eine zufällige Koinzidenz.
+
+### 3. Beziehung zu Maverick — zentraler Befund dieser Phase
+
+**VERIFIED, deutlich über reine String-Koexistenz hinausgehend:** Der Datenblock, der `FAuth1047`/`FAuth1047Developer`/`FSessions1047`/`AccountInfo1047`/`Login1047`/`RefreshAuthToken1047`/`MaverickLoginStatusChanged` enthält, ist **derselbe zusammenhängende `.rdata`-Bereich** wie eine Reihe von Maverick-spezifischen Laufzeit-Strings unmittelbar davor:
+```
+CantParseAuthToken
+Failed to parse token for user
+MaverickErrors
+FailedToConnectToNats
+Unable to establish connection with servers
+1047.Online.Maverick.ForceHttpInsteadOfGrpc   ← echter CVar-Name mit Beschreibungstext:
+  "If true, forces maverick clients to use http instead of grpc."
+/maverick.iam.IAMAuthorization/RenewToken/http
+/maverick.natsmanager.NatsManagerConnections/GetNatsToken/http
+/maverick.login_queue.LoginQueue/JoinLoginQueue/http
+/maverick.login_queue.LoginQueue/TryLogin/http
+Prod / PreProd / Developer- / EnvironmentGroup / Environment / GameChannelName / GameNamespace / Maverick
+```
+Zusätzlich existiert der CVar `1047.Online.UseMaverickForNativePlatformProfile` sowie ein ganzer Block von `1047.Online.Nats.*`-CVars (`HeartbeatIntervalSeconds`, `MaxPingsOut`, `MaxReconnectAttempts`, `PingIntervalMs`, `ReconnectDelayMs`, `ReplayIntervalSeconds`) – reale, mit Beschreibungstext versehene Unreal-Console-Variablen, keine bloßen Symbolnamen.
+
+**Interpretation:** Anders als bei den in Phase 3/4 dokumentierten Fällen handelt es sich hier **nicht** um zufällige FName-Pool-Nachbarschaft, sondern um CVar-Registrierungsdaten (Name + Beschreibungstext als zusammengehöriges Paar) und Fehlermeldungs-/Endpoint-Strings, die inhaltlich direkt aufeinander Bezug nehmen (Auth-Token-Parsing-Fehler unmittelbar neben NATS-Verbindungsfehlern unmittelbar neben `FAuth1047`). **STRONGLY INDICATED**, dass der „1047"-`IAuth`/`ISessions`-Backend-Stack (inkl. der „Developer"-Variante) **auf der Maverick-Infrastruktur (gRPC/HTTP-Fallback + NATS)** aufbaut, nicht auf einem eigenständigen, backend-losen Mechanismus. Die drei Werte `Prod`/`PreProd`/`Developer-` lesen sich wie Werte eines `Environment`-Enums oder -Strings (passend zu `EnvironmentGroup`/`GameNamespace`) – **HYPOTHESIS**: „Developer" in `OnlineServices1047Developer` bezeichnet vermutlich eine **Umgebungs-Variante** (dev/staging Maverick-Deployment) desselben Auth/Sessions-Codes, nicht einen grundsätzlich anderen, backend-losen Codepfad. Diese Interpretation ist plausibel, aber nicht abschließend bewiesen, da keine direkte Codezeile die Verknüpfung „Environment-Wert → aktiviertes Backend" zeigt.
+
+**Explizit vermieden:** Es wird **nicht** behauptet, dass `OnlineServices1047Developer` zwingend Maverick benötigt – nur, dass der unmittelbar benachbarte, thematisch zusammenhängende Datenblock dies nahelegt. Ein alternativer, nicht widerlegter Fall: „Developer" könnte ein Test-Stub sein, der zwar im selben Modul liegt, aber Maverick-Aufrufe durch Mock-Antworten ersetzt – das wäre mit denselben String-Funden vereinbar und bleibt **HYPOTHESIS**.
+
+### 4. Beziehung zu Sessions – inkl. Korrektur einer Phase-4-Aussage
+
+**KORREKTUR gegenüber Phase 4:** Dort wurde berichtet, `GetResolvedConnectString` sei mit 0 Treffern nicht im Binary vorhanden. Das war eine **Falschaussage infolge unvollständiger Methode** (nur ASCII-Encoding durchsucht). Im UTF-16LE-Dump finden sich **3 Treffer**, allesamt vollständige Log-/Fehlermeldungen:
+```
+Invalid session info in search result to GetResolvedConnectString()
+Invalid session info for session %s in GetResolvedConnectString()
+Unknown session name (%s) specified to GetResolvedConnectString()
+```
+**VERIFIED**: `GetResolvedConnectString()` ist eine real aufgerufene, mit Fehlerbehandlung abgesicherte Funktion im Client. Der unmittelbare Kontext dieser drei Zeilen zeigt jedoch **eindeutig**, dass sie zur **klassischen `FOnlineSessionSteam`-Implementierung** gehören (`OnlineSubsystemSteam`-Modul), **nicht** zu `OnlineServices1047Developer`/`FSessions1047`:
+```
+Using Host Data for Connection Serialization
+Using P2P Data for Connection Serialization
++connect
+-SteamConnectIP=%s
+Error inviting %s to session %s, not connected to Steam
+-SteamServerName=
+steam.%s:%d
+Steam could not resolve session info! ValidP2P[%d] ValidHost[%d] ConnectionMethod[%s]
+```
+**VERIFIED, eigenständig wichtiger Fund unabhängig von „1047Developer":** Der Steam-Session-Pfad unterscheidet explizit zwischen **P2P-Daten** und **Host-Daten** bei der Connection-Serialisierung (`ValidP2P`/`ValidHost`/`ConnectionMethod`) und erzeugt Connect-Strings im Format `steam.<SteamID>:<Port>`, abrufbar über die UE-Standardkommandozeile `+connect`/`-SteamConnectIP=`. Das ist der bisher konkreteste Beleg in der gesamten Untersuchungsreihe dafür, dass **mindestens ein** Session→Connect-String→Verbindungsaufbau-Pfad im Client tatsächlich vollständig implementiert und fehlerbehandelt ist – dieser gehört jedoch zum generischen `OnlineSubsystemSteam`, nicht nachweisbar zu `OnlineServices1047Developer`.
+
+**Weitere Session-Property-Namen** (UTF-16-Dump, Kontext `LogOnlineServicesConfig`/`SessionSettings`, vermutlich generische `UE::Online`-Reflection-Properties): `bIsPresenceSession`, `bDestroySession`, `bFindLANSessions`, `SessionSearchFilters`, `bAntiCheatProtected`, `bAllowSanctionedPlayers`, `bIsLANSession`, `SessionIdOverride`. **VERIFIED** als reale Property-Namen (Config-Log-Kategorie vorhanden), **UNKNOWN**, welchem konkreten Backend (`FSessionsEOSGS`, `FSessionsLAN`, `FSessions1047`) sie im Einzelfall zugeordnet sind. Die konkreten LAN-Beacon-Protokollfunktionen (`TryHostLANSession`, `OnValidQueryPacketReceived`, `OnValidResponsePacketReceived`, `AppendSessionToPacket`, `ReadSessionFromPacket`, `StopLANSession`, `LANSessionManager`, `CreateSessionImpl`, `FindSessionsImpl`, `LeaveSessionImpl`) bleiben **weiterhin bei 0 Treffern**, auch im UTF-16-Dump – die in Phase 4 gezogene Schlussfolgerung (keine aktiv sichtbare LAN-Beacon-Protokoll-Implementierung) bleibt damit **bestehen**, während die Aussage zu `GetResolvedConnectString` widerrufen wird.
+
+### 5. Beziehung zu Networking
+
+Keine direkte, belastbare Verknüpfung zwischen `FSessions1047`/`OnlineServices1047Developer` und `NetDriver`/`GameNetDriver`/`MeshNetDriver`/`MeshPort`/`ClientTravel`/`PendingNetGame` gefunden – diese Symbole liegen in anderen, nicht offensichtlich zusammenhängenden `.rdata`-Bereichen. Der einzige **vollständig belegte** Session→Connect-String→Networking-Pfad im gesamten Untersuchungszeitraum ist der oben dokumentierte **Steam**-Pfad (`FOnlineSessionSteam::GetResolvedConnectString` → `steam.<id>:<port>` → `+connect`). Für `FSessions1047`/`OnlineServices1047Developer` bleibt der Zusammenhang `Session → Connection String → NetDriver → ClientTravel` **UNKNOWN** – wie in der Aufgabenstellung vorgesehen, wird dies explizit nicht als gegeben angenommen.
+
+### 6. Developer-/QA-Escape-Hatch – Bewertung
+
+Der Name „Developer" korreliert mit einem plausiblen `Environment`-Wertesatz (`Prod`/`PreProd`/`Developer-`), was eher für eine **Umgebungs-Variante** (dev/staging-Server) als für einen vollständig lokalen/offline Testmodus spricht (s. Abschnitt 3). Zusätzliche Suche nach `Dev`, `QA`, `Test`, `Debug`, `Mock`, `Fake`, `Local`, `PIE`, `Automation`, `Editor` im unmittelbaren Umfeld der „1047Developer"-Strings ergab **keine** weiteren Treffer, die auf einen Offline-/Mock-Modus hindeuten (kein `MockAuth`, kein `FakeSession`, kein `OfflineMode` in der Nachbarschaft gefunden). **HYPOTHESIS bleibt bestehen, aber mit geänderter Richtung gegenüber Phase 4**: `OnlineServices1047Developer` ist eher ein **serverseitig weiterhin backend-abhängiger** Entwicklungs-/Staging-Kanal als ein backend-freier lokaler Testpfad – für eine Community-Server-Architektur dadurch **weniger vielversprechend** als ursprünglich in Phase 4 vermutet.
+
+### 7. Grenze der Methode
+
+Reine Reflection-/String-Analyse liefert an diesem Punkt **konkrete Funktions- und Klassennamen mit thematisch kohärentem Umfeld**, aber keine Aufrufbeziehungen (wer ruft `FSessions1047::JoinSession` auf, mit welchen Parametern, was passiert mit dem Ergebnis). Diese Grenze ist nun erreicht – weitere `strings`-Suche verspricht keinen Erkenntnisgewinn mehr zu den offenen Fragen.
+
+---
+
+### Decompilation Decision Point
+
+**Bewertung anhand der in Abschnitt 8 der Aufgabenstellung genannten Kriterien:**
+
+| # | Kriterium | Erfüllt? |
+|---|---|---|
+| 1 | Konkrete `OnlineServices1047Developer`-nahe Funktionen gefunden, deren Aufrufer unbekannt sind | ✅ Ja (`Login1047`, `RefreshAuthToken1047`, `FSessions1047`-Methoden) |
+| 2 | Factory-/Provider-Registrierung gefunden | ❌ Nein (0 Treffer für alle gesuchten Factory-/Registrierungssymbole) |
+| 3 | Session-Funktionen gefunden | ✅ Ja (`FSessions1047`, plus generisch `CreateSession`/`FindSessions`/`JoinSession`) |
+| 4 | `GetResolvedConnectString`-ähnliche 1047-spezifische Funktion gefunden | ⚠️ Teilweise – `GetResolvedConnectString` existiert, ist aber nachweisbar dem Steam-Pfad, nicht „1047" zugeordnet |
+| 5 | Verbindung zu Maverick/OnlineNetworkUtils1047 gefunden | ✅ Ja, deutlich (CVars, Fehlermeldungscluster, gRPC/NATS-Endpunkte im selben Datenblock) |
+| 6 | Konkrete `NetDriver`-/Travel-Aufrufe gefunden | ❌ Nein (kein Zusammenhang zu `FSessions1047` nachweisbar) |
+| 7 | Mehrere relevante Call-Sites, deren Beziehung ohne Disassembler nicht bestimmbar ist | ✅ Ja |
+
+**Ergebnis: `DECOMPILATION NOW JUSTIFIED`** (Kriterien 1, 3, 5 und 7 eindeutig erfüllt).
+
+**Konkreter Vorschlag für einen künftigen, gesondert zu autorisierenden Disassembling-Schritt:**
+
+- **Binary:** `PortalWars2/Binaries/Win64/PortalWars2-Win64-Shipping.exe`
+- **Zielfunktionen/-klassen:**
+  1. `UE::Online::FAuth1047::Login` bzw. der durch den String `Login1047` referenzierte Codepfad, sowie `RefreshAuthToken1047`
+  2. `UE::Online::FSessions1047` – insbesondere die zu `CreateSession`/`FindSessions`/`JoinSession` analogen Methoden dieser Klasse
+  3. Die CVar-Callback-Funktion von `1047.Online.Maverick.ForceHttpInsteadOfGrpc` (zeigt unmittelbar, welche Codepfade zwischen gRPC und HTTP-Fallback umschalten)
+- **Warum genau diese:** Sie sind die einzigen konkret benannten, projektspezifischen Symbole, die (a) nachweislich mit Maverick in Verbindung stehen und (b) direkt für Auth/Session – also den Einstiegspunkt jedes Multiplayer-Verbindungsversuchs – zuständig sind. Sie sind damit die vielversprechendsten Kandidaten, um die zentrale offene Frage der gesamten Untersuchungsreihe zu klären.
+- **Zu beantwortende Frage:** Mündet `FSessions1047::JoinSession()` (oder Äquivalent) in einen Aufruf von `GetResolvedConnectString()`/`ClientTravel()`/`UPendingNetGame`, der ausschließlich mit einer von Maverick (`LobbyManager.RequestGameServer`/`DedicatedServerManager.AllocateServer`) gelieferten Adresse funktioniert – oder existiert ein Codepfad, der ohne erreichbares Maverick-Backend (z. B. rein über EOS-P2P, Steam-P2P oder eine lokale Adresse) zu einer gültigen Verbindung führen kann?
+
+**Noch nicht durchgeführt:** Es wurde in dieser Phase weiterhin **kein** Disassembler installiert oder verwendet – dies ist lediglich die dokumentierte Entscheidungsgrundlage für einen möglichen nächsten, gesondert zu autorisierenden Schritt.
