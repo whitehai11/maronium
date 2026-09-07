@@ -361,6 +361,105 @@ Die neuen Funde **bestätigen und verfeinern**, ändern aber nicht grundlegend d
 
 *Hinweis: Diese Analyse beruht ausschließlich auf statischer Untersuchung vorhandener Dateien (Verzeichnisstruktur, Dateitypen, extrahierte Textstrings aus Binärdateien). Es wurde kein Code disassembliert, kein Anti-Cheat/DRM analysiert oder umgangen, und keine Datei der Installation verändert.*
 
+---
+
+## MeshNetDriver / Gameplay Network Path Analysis
+
+Untersuchungsdatum: 2026-09-07 (Fortsetzung, Phase 3).
+Methode: (a) Erweiterte Kontext-Analyse des vorhandenen `strings`-Dumps der `PortalWars2-Win64-Shipping.exe` (Zeilennummern-basierte Nachbarschaftsprüfung), (b) PE-Header-/Import-Tabellen-Analyse via `objdump -p` (read-only), (c) Prüfung der verfügbaren Werkzeuge für echtes Disassembling. Keine Datei verändert, kein Patchen, keine Umgehung von Schutzmechanismen, keine Programmausführung.
+
+### Werkzeug-Einschränkung (wichtig für die Bewertung aller folgenden Punkte)
+
+**VERIFIED (Tooling-Fakt, kein Spielbefund):** In dieser Umgebung sind weder Ghidra noch radare2/r2, IDA oder ein vergleichbarer interaktiver Disassembler installiert (geprüft via `which`/Dateisuche – keine Treffer). Verfügbar sind lediglich `objdump`, `readelf` und `nm` (GNU Binutils, primär für ELF ausgelegt, aber mit eingeschränkter PE-Unterstützung). Ein echtes, symbolbasiertes Cross-Referenzieren einzelner Funktionsaufrufe (Aufgabe „Referenzstellen disassemblieren") war damit **nicht durchführbar**: Die Haupt-Exe ist ein Shipping-Build (keine Funktionsnamen im Symboltabellen-Sinn, `.text`-Sektion ca. 245 MB laut PE-Header `SizeOfCode`), sodass eine vollständige `objdump -d`-Disassemblierung ohne Symbolnamen weder zeitlich im Rahmen dieser Sitzung machbar noch ohne Namen sinnvoll auswertbar gewesen wäre. Dieser Punkt wird explizit als **methodische Grenze** dokumentiert statt eines erfundenen Ergebnisses – Aufgabenpunkt 2 der Anfrage („Referenzstellen disassemblieren") konnte daher nur **teilweise** (via Import-Tabelle, s. u.) statt per echtem Disassembling bearbeitet werden.
+
+### 1. PE-Import-Tabellen-Analyse (Ersatz für Disassembling)
+
+**VERIFIED.** `objdump -p` auf `PortalWars2-Win64-Shipping.exe` zeigt die vollständige Liste der zur Ladezeit statisch gebundenen DLL-Importe. Relevanter Befund: **Weder `steam_api64.dll` noch `EOSSDK-Win64-Shipping.dll` erscheinen in der statischen Import-Tabelle.** Stattdessen werden nur System-DLLs (`WS2_32.dll`/Winsock, `IPHLPAPI.DLL`, `CRYPT32.dll`, `WINHTTP.dll`, `Secur32.dll`, `ncrypt.dll` u. a.) sowie wenige Drittanbieter-DLLs (`dxgi.dll`, `DSOUND.dll`, `libtox.dll`, `OpenColorIO_2_3.dll`) statisch importiert.
+**Interpretation:** Das ist **kein Hinweis darauf, dass EOS/Steam ungenutzt sind** – es ist das für UE-Plugins übliche Verhalten: `OnlineSubsystemSteam` und das EOSSDK-Plugin laden ihre DLLs zur Laufzeit dynamisch (`FPlatformProcess::GetDllHandle` + `GetProcAddress`), nicht über die PE-Import-Tabelle. Der Befund ist damit **methodisch neutral**, bestätigt aber, dass `WS2_32.dll` (rohe Windows-Sockets-API) direkt eingebunden ist – das ist die Grundvoraussetzung für **jeden** UDP/TCP-basierten NetDriver (egal ob `IpNetDriver`, ein hypothetischer `MeshNetDriver` oder Steam-/EOS-Transport-Wrapper, die letztlich ebenfalls über Winsock senden).
+
+### 2. Erweiterte Kontextanalyse: `MeshPort` / `MeshNetDriver` / `GamePort` / `BeaconPort`
+
+**VERIFIED (Rohbefund).** Ein erweiterter Kontext-Dump (±25 Zeilen um `MeshPort`, Zeile 362661 im Strings-Dump) zeigt folgendes zusammenhängendes Cluster von FName-artigen Kurz-Strings:
+```
+GameNetDriver, MeshNetDriver, GameSession, DemoNetDriver,
+FlushNetDormancy, BeaconPort, GamePort, PartySession,
+PendingNetDriver, MeshPort, BeaconNetDriver, VoiceChat, ...
+```
+umgeben von thematisch komplett unabhängigen Engine-Strings (`MeshEmitterVertexColor`, `NavMesh`, `SoundCue`, `InterpCurveVector`, `EditorLayout` – Rendering-/Editor-/Animationsbezogen).
+
+**Wichtige methodische Korrektur gegenüber der letzten Analysephase:** Diese Zeilenreihenfolge im `strings`-Dump entspricht der **physischen Lage im interned FName-Pool** der Engine (`.rdata`-Namenstabelle), **nicht** einer Quellcode- oder Aufruf-Nachbarschaft. Die Durchmischung mit völlig fachfremden Namen (Sound, Mesh-Rendering, Editor) zeigt, dass es sich um den **globalen** FName-Intern-Pool des gesamten Spiels handelt, nicht um eine kuratierte, thematisch sortierte Liste. Die Nachbarschaft von `MeshPort`/`MeshNetDriver` zu `GamePort`/`BeaconPort`/`GameNetDriver` ist daher als **schwächeres** Indiz zu werten als in der vorherigen Analysephase dargestellt – **HYPOTHESIS statt STRONGLY INDICATED** für eine direkte funktionale Kopplung.
+Was weiterhin **VERIFIED** bleibt: `MeshPort` und `MeshNetDriver` sind als eigenständige, projektspezifische FName-Strings tatsächlich vorhanden (kein Fund-Artefakt), und sie treten in der **gleichen strukturellen Kategorie** auf wie andere echte UE-Netzwerk-Konfigurationsnamen (`GamePort`, `BeaconPort` sind reale `FURL`/`UEngine`-Konfigurationsfelder; `GameNetDriver`, `DemoNetDriver`, `BeaconNetDriver`, `PendingNetDriver` sind reale UE-NetDriver-Bezeichner). Das legt nahe, dass `MeshPort`/`MeshNetDriver` nach demselben Namensmuster gebildet wurden – **aber ohne Disassembling ist nicht feststellbar, ob `MeshPort` tatsächlich gelesen, geschrieben oder auf einen Socket gebunden wird.**
+
+### 3. Beantwortung der MeshPort-Detailfragen (Abschnitt 5 der Aufgabenstellung)
+
+| Frage | Antwort |
+|---|---|
+| Wo wird `MeshPort` gelesen? | **UNKNOWN** – ohne Disassembling nicht bestimmbar (kein Cross-Reference-Tooling verfügbar) |
+| Wo wird `MeshPort` geschrieben? | **UNKNOWN** – dito |
+| Wird darauf ein Socket/Listener geöffnet? | **UNKNOWN** – `WS2_32.dll` ist eingebunden (Voraussetzung erfüllt), aber kein Beleg für konkrete Bind-Aufrufe an `MeshPort` |
+| Wird `MeshPort` zusammen mit einer Remote-IP verwendet? | **UNKNOWN** – keine String-Evidenz einer Kombination `MeshPort`+IP-Feld gefunden |
+| Verbindung `MeshPort` ↔ EOS P2P? | **UNKNOWN** – `EOS_P2P_SendPacket` (Zeile 432705) liegt im Rohdump weit entfernt von `MeshNetDriver`/`MeshPort` (Zeile ~362646–362661); das ist aber – siehe methodische Korrektur oben – ohnehin kein aussagekräftiger Abstand, da beide Bereiche unterschiedlichen internen Tabellen (FName-Pool vs. Funktionssymbol-Strings) entstammen. Kein positiver **und** kein negativer Beleg. |
+| Verbindung `MeshPort` ↔ Steam Networking? | **UNKNOWN** – nur die alte `SteamNetworking006`-Interface-Version als String gefunden (s. Punkt 5), keine erkennbare Verknüpfung zu `MeshPort` |
+| Verbindung `MeshPort` ↔ `GameNetDriver`? | **HYPOTHESIS** – beide sind Teil derselben strukturellen Namenskategorie (NetDriver-Bezeichner bzw. Port-Konfigurationsfeld), aber keine belastbare Kopplung nachweisbar |
+| Ist `MeshNetDriver` möglicherweise ein echter Gameplay-NetDriver? | **HYPOTHESIS** – plausibel angesichts des Namensmusters und des bereits dokumentierten "PW2-P2P-Full"-Build-Pfads, aber **nicht verifiziert**. Ebenso plausibel (und nicht auszuschließen): ein sekundärer NetDriver ausschließlich für Party-/Lobby-/Voice-Kommunikation (analog zu `DemoNetDriver`, der ebenfalls ein "Zweit-Driver" neben `GameNetDriver` ist, aber nur für Replay-Aufzeichnung, nicht für reguläres Gameplay). Beide Interpretationen sind mit den vorliegenden Daten vereinbar. |
+
+### 4. UE Online Services: `FSessionsLAN` — neuer, relevanter Fund
+
+**VERIFIED (neuer Fund in dieser Phase).** Im Client sind Klassen des neuen UE5-`OnlineServices`-Systems (Nachfolger von `OnlineSubsystem`) vorhanden, mit mehreren parallelen Backend-Implementierungen:
+```
+UE::Online::FSessionsEOSGS::JoinSessionImpl        (EOS Game Services Backend)
+UE::Online::FSessionsEOSGS::CheckState
+UE::Online::FSessionsLAN::JoinSessionImpl          (LAN-Backend!)
+UE::Online::FSessionsOSSAdapter::JoinSessionImpl   (Adapter auf klassisches OnlineSubsystem, z. B. Steam)
+FOnlineSessionSteam::CreateSession
+FOnlineSessionSteam::JoinSession
+```
+**Interpretation:** `FSessionsLAN` ist Teil des **UE5-Engine-Plugins** `OnlineServices` (kein 1047-Games-Eigenbau) und implementiert Session-Erstellung/-Beitritt über LAN-Broadcast statt über ein Online-Backend. Das ist ein **Standard-Engine-Baustein**, der in vielen UE5-Projekten unverändert mitkompiliert wird, unabhängig davon, ob das Projekt ihn tatsächlich per Konfiguration aktiviert. **Die bloße Kompilierung beweist nicht, dass Splitgate 2 LAN-Sessions für normale Spieler anbietet** (gemäß der expliziten Bewertungsvorgabe dieser Aufgabe). Es ist jedoch ein **relevanter, bisher nicht dokumentierter Ansatzpunkt**: Sollte der `FSessionsLAN`-Pfad im Shipping-Client aktiv/erreichbar sein, wäre ein reines LAN-Match (ohne Maverick-Backend, ohne EOS/Steam-Matchmaking) potenziell der technisch einfachste denkbare Weg zu einem eigenständigen Community-Match – dies bleibt aber **HYPOTHESIS**, nicht mehr.
+
+### 5. Steam Networking / EOS P2P – Versionsstand
+
+**VERIFIED.** Nur die **alte** Steamworks-Networking-Interface-Version `SteamNetworking006` (die klassische, seit Jahren als Legacy geltende `ISteamNetworking`-API) wurde als String gefunden. Keine Treffer für `SteamNetworkingSockets`, `SteamNetworkingUtils` oder `SteamNetworkingMessages` (die moderneren, seit 2020 von Valve empfohlenen APIs). **HYPOTHESIS:** Falls Steam-Networking tatsächlich als Transport genutzt wird, deutet dies eher auf ältere/kompatibilitätsbedingte Bindungen hin – möglicherweise ist die moderne API-Variante nur in `steam_api64.dll` selbst enthalten und daher als String nicht im Haupt-Client sichtbar (die DLL wurde nicht separat auf diese Strings hin untersucht). **UNKNOWN**, welche der beiden APIs zur Laufzeit tatsächlich aktiv ist.
+
+### 6. Listen-/Connect-Verhalten und Kommandozeile (Abschnitt 3 der Aufgabenstellung, erweitert)
+
+| Gesuchter Begriff | Treffer | Bewertung |
+|---|---|---|
+| `Listen` / `ListenServer` / `NM_ListenServer` | 0 echte Treffer (nur Envoy-Proxy-„Listener"-Rauschen, s. vorherige Analysephase) | UNKNOWN |
+| `open <ip>:<port>` | 0 isolierte Treffer | UNKNOWN (Konsolenbefehle werden in UE oft nicht als Literal-String, sondern über Exec-Funktionsnamen aufgelöst – Fehlen ist nicht aussagekräftig) |
+| `ServerTravel` | 1 Treffer (`ETravelFailure::ServerTravelFailure`) | VERIFIED, dass die ServerTravel-Fehlerbehandlung compiliert ist – Standard-Engine-Code, kein projektspezifischer Beleg |
+| `Browse` | 37 Treffer, **aber ausschließlich** UI-/Editor-Kontext (`ContentBrowser`, `EPortalWarsUIMapBrowser*` – ein **UGC-Map-Browser-System** für community-erstellte Maps) | Kein Netzwerk-Browse-Bezug gefunden; **Nebenfund**: Es existiert ein User-Generated-Content-Map-System (`UGCCommunity`, `UGCMyMaps`, `UGCMyBookmarks`) – potenziell relevant für spätere Community-Content-Recherche, aber außerhalb des Scopes dieser Netzwerk-Analyse |
+| `WorldContext` | 3 Treffer (`WorldContextObject`, generisch) | VERIFIED als Standard-Engine-Symbol, keine projektspezifische Aussage möglich |
+| `GetNetMode`, `IsRunningDedicatedServer`, `bIsLanMatch`, `NM_ListenServer` | 0 Treffer | UNKNOWN – wie in Phase 2 dokumentiert, sind `ENetMode`-Werte und viele `UWorld`/`UEngine`-Methodennamen native (nicht reflektierte) Symbole, die in Shipping-Builds grundsätzlich nicht als Strings vorliegen. Kein Aussagewert. |
+| `CreateSession` / `JoinSession` | mehrfach (s. Punkt 4) | VERIFIED, siehe `FSessionsLAN`/`FSessionsEOSGS`/`FOnlineSessionSteam` oben |
+| `UPendingNetGame::TravelCompleted`, `ETravelFailure::ClientTravelFailure`, `ETravelFailure::PendingNetGameCreateFailure` | gefunden | VERIFIED – Standard-UE-Verbindungsaufbau-Klasse (`UPendingNetGame`) ist compiliert; das ist die Klasse, die den Client-seitigen Verbindungsversuch zu einem beliebigen Server/NetDriver abwickelt (dedizierter Server, Listen-Server oder P2P-Host gleichermaßen) – auch das ist Standard-Engine-Code, kein spezifischer Beleg für einen bestimmten Modus. |
+| `NetConnection` (exaktes Symbol) | 0 (nur `NetConnection` als Teilstring vorher fälschlich gezählt) | UNKNOWN |
+| `NetDriverDefinitions` (Plural, INI-Konfigurationsschlüssel) | 0 | UNKNOWN – der konkrete `[/Script/Engine.Engine] NetDriverDefinitions=(...)`-Konfigurationseintrag, der zeigen würde, welche C++-Klasse hinter `MeshNetDriver` steckt, liegt vermutlich in den (nicht extrahierten) IoStore-Pak-Configs, siehe Abschnitt 10 der Haupt-Analyse |
+
+### 7. Passive Netzwerkbeobachtung (Abschnitt 4 der Aufgabenstellung)
+
+**Nicht durchgeführt in dieser Sitzung – bewusste Entscheidung, kein Datenmangel-Zufall.** Begründung:
+1. Ein Programmstart von `PortalWars2-Win64-Shipping.exe` in dieser Linux-Umgebung würde über Steam Play/Proton erfolgen und mit hoher Wahrscheinlichkeit den **Kernel-Mode-Anti-Cheat-Treiber** (equ8/"Merlin", `redkard.sys.bootstrap`) zur Installation/Ausführung bringen – das ist eine nicht-triviale, schwer reversible Systemaktion (Kernel-Treiber-Installation), die außerhalb der in dieser Aufgabe explizit gezogenen Grenzen liegt und **nicht ohne gesonderte, ausdrückliche Autorisierung** durchgeführt werden sollte.
+2. Paketaufzeichnung mit `tcpdump` (in dieser Umgebung vorhanden) erfordert erhöhte Rechte (Root/Capabilities), die in dieser Sitzung nicht eingerichtet/angefragt wurden.
+3. Es steht kein GUI-Automatisierungswerkzeug für die Steam-Desktop-Anwendung in dieser Sitzung zur Verfügung, um den Startvorgang zuverlässig und beobachtbar durchzuführen.
+
+**UNKNOWN** bleibt daher weiterhin, welche Hosts/Ports beim Programmstart tatsächlich kontaktiert werden. Dieser Schritt wird als expliziter, gesondert zu autorisierender Folgeschritt in „Next Steps" unten aufgeführt, statt Ergebnisse zu erfinden.
+
+### 8. Auswirkung auf die Machbarkeit eines Community-Dedicated-Servers
+
+Die vertiefte Analyse **bestätigt im Kern die bisherige Einschätzung, relativiert aber die Beweiskraft des `MeshNetDriver`-Fundes**:
+
+- Der in Phase 2 als „STRONGLY INDICATED" bewertete Zusammenhang zwischen `MeshPort`/`MeshNetDriver` und einem echten P2P-Gameplay-Pfad wird in dieser Phase auf **HYPOTHESIS** zurückgestuft, da die vermeintliche „Namens-Cluster-Nähe" sich bei genauerer Betrachtung als Artefakt der FName-Pool-Speicherreihenfolge herausstellt, nicht als belastbarer Hinweis auf Code-Kopplung. Diese Korrektur ist selbst ein wichtiges Analyseergebnis (Vermeidung von Fehlschlüssen aus reiner String-Nachbarschaft).
+- **Neu und potenziell wertvoller** für eine Community-Lösung: Der Fund von `FSessionsLAN` zeigt, dass die UE5-Engine-Infrastruktur für **Session-Beitritt über LAN ohne Online-Backend** grundsätzlich mitkompiliert ist. Falls dieser Pfad im Spiel aktiv nutzbar wäre (nicht verifiziert), wäre er ein deutlich kleinerer, besser abgrenzbarer Ansatzpunkt für ein Community-Setup als der Nachbau des gesamten Maverick-Backends – dies müsste aber durch dynamische Tests (siehe Next Steps) bestätigt werden.
+- Die grundsätzliche Kernaussage bleibt unverändert: Ohne echtes Disassembling (das in dieser Sitzung mangels Werkzeug nicht möglich war) oder Zugriff auf Quellcode/Server-Binary lässt sich aus reiner `strings`-Analyse **keine verlässliche Aussage** darüber treffen, ob und wie `MeshNetDriver` für Gameplay-Replikation zwischen Spielern ohne zentralen Server nutzbar ist.
+
+---
+
+*Hinweis: Diese Analyse beruht ausschließlich auf statischer Untersuchung vorhandener Dateien (Verzeichnisstruktur, Dateitypen, extrahierte Textstrings, PE-Header-/Import-Tabellen-Auswertung). Es wurde kein Code disassembliert (mangels verfügbarem Werkzeug), kein Anti-Cheat/DRM analysiert oder umgangen, keine Datei der Installation verändert und das Spiel nicht gestartet.*
+
 ## Next Steps
 
-Der nützlichste nächste Untersuchungsschritt basierend auf diesen Funden: **Dynamische Analyse statt weiterer Strings-Suche.** Da die verbleibenden offenen Fragen (aktive Nutzung von `MeshNetDriver` im Gameplay, tatsächliches Vorhandensein von `WITH_SERVER_CODE`-Codepfaden, Funktionsfähigkeit von `-server`) prinzipbedingt nicht mehr per `strings`-Extraktion beantwortbar sind, wäre der wertvollste nächste Schritt eine **Disassembly-gestützte Analyse der `PortalWars2-Win64-Shipping.exe`** (z. B. mit Ghidra/IDA, rein lesend, ohne Patchen) gezielt an den Referenzstellen der gefundenen Symbole `MeshNetDriver`, `MeshPort` und `GameSession`, um zu klären, ob und wie diese zur Laufzeit tatsächlich verdrahtet sind – sowie ergänzend eine passive Netzwerkbeobachtung beim (versuchten) Programmstart, um zu sehen, ob der Client überhaupt noch einen Verbindungsversuch zu einem NetDriver-Port unternimmt, bevor das Maverick-Backend antwortet.
+Die nützlichsten nächsten Untersuchungsschritte basierend auf dieser Phase:
+
+1. **Echtes Disassembling nachholen**, sobald ein geeignetes Werkzeug (Ghidra, radare2) verfügbar ist – gezielt an den Referenzstellen von `MeshPort`, `MeshNetDriver` und `FSessionsLAN`, um die in dieser Phase auf HYPOTHESIS zurückgestuften Fragen (tatsächliche Lese-/Schreibzugriffe, Socket-Bindung, Kopplung an EOS-P2P/Steam) zu klären.
+2. **Passive Netzwerkbeobachtung mit expliziter, gesonderter Autorisierung**: Vor einem tatsächlichen Programmstart müsste geklärt werden, ob die Installation des Kernel-Anti-Cheat-Treibers akzeptabel ist, und `tcpdump`-Capture-Rechte müssten separat eingerichtet werden. Erst danach wäre ein kontrollierter, beobachteter Startversuch sinnvoll und vertretbar.
+3. **IoStore/Pak-Konfigurationsdateien extrahieren** (weiterhin unverändert wichtigster offener Punkt aus Phase 1): Der `NetDriverDefinitions`-Konfigurationseintrag, der die tatsächliche C++-Klasse hinter `MeshNetDriver` benennen würde, liegt vermutlich dort und würde viele der hier als HYPOTHESIS/UNKNOWN eingestuften Fragen direkt beantworten.
